@@ -1,0 +1,20 @@
+total 164
+-rwxr-xr-x 1 vscode vscode  3896 May  1 15:34 LineParser.c
+-rwxr-xr-x 1 vscode vscode  1216 May  1 15:34 LineParser.h
+-rw-r--r-- 1 vscode vscode  9048 May  5 10:05 LineParser.o
+-rwxr-xr-x 1 vscode vscode 16348 May  5 10:05 Printer
+-rwxr-xr-x 1 vscode vscode   265 May  4 06:01 Printers.c
+-rw-r--r-- 1 vscode vscode  3340 May  5 10:05 Printers.o
+-rw-r--r-- 1 vscode vscode    54 May  5 10:03 input.txt
+-rwxr-xr-x 1 vscode vscode 16528 May  5 10:05 looper
+-rwxr-xr-x 1 vscode vscode   616 May  5 09:41 looper.c
+-rw-r--r-- 1 vscode vscode  3936 May  5 10:05 looper.o
+-rwxr-xr-x 1 vscode vscode   764 May  2 07:41 makefile
+-rwxr-xr-x 1 vscode vscode 17100 May  5 10:05 mypipe
+-rwxr-xr-x 1 vscode vscode  1422 May  4 06:20 mypipe.c
+-rw-r--r-- 1 vscode vscode  4856 May  5 10:05 mypipe.o
+-rwxr-xr-x 1 vscode vscode 28036 May  5 10:05 myshell
+-rwxr-xr-x 1 vscode vscode  4224 May  5 10:02 myshell.c
+-rw-r--r-- 1 vscode vscode 10620 May  5 10:05 myshell.o
+-rw-r--r-- 1 vscode vscode     0 May  5 10:07 out.txt
+-rw-r--r-- 1 vscode vscode    54 May  5 10:07 output.txt

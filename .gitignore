@@ -1,0 +1,10 @@
+# Compiled object files
+myshell.o
+mypipeline.o
+LineParser.o
+
+# Executable binaries
+myshell
+mypipeline
+looper
+Printer
