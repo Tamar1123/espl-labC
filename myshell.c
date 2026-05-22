@@ -11,17 +11,96 @@
 #include <fcntl.h>
 #include <signal.h>
 
+typedef struct process {
+    void* dummy; 
+} process;
 
+process* global_process_list = NULL;
 int debug_mode = 0;
 
+void execute_pipeline(cmdLine *left_cmd, process **proc_list) {
+    cmdLine *right_cmd = left_cmd->next;
+
+    if (left_cmd->outputRedirect) {
+        fprintf(stderr, "Error: Left process cannot redirect stdout in a pipeline.\n");
+        return;
+    }
+    if (right_cmd->inputRedirect) {
+        fprintf(stderr, "Error: Right process cannot redirect stdin in a pipeline.\n");
+        return;
+    }
+
+    int pipefd[2];
+    if (pipe(pipefd) == -1) {
+        perror("pipe failed");
+        return;
+    }
+
+    pid_t child1 = fork();
+    if (child1 == -1) { perror("fork failed"); close(pipefd[0]); close(pipefd[1]); return; }
+    
+    if (child1 == 0) {
+        setpgid(0, 0); // create a process group for the pipeline
+        dup2(pipefd[1], STDOUT_FILENO);
+        close(pipefd[1]);
+        close(pipefd[0]);
+
+        if (left_cmd->inputRedirect) {
+            int in_fd = open(left_cmd->inputRedirect, O_RDONLY);
+            if (in_fd >= 0) { dup2(in_fd, STDIN_FILENO); close(in_fd); }
+        }
+
+        execvp(left_cmd->arguments[0], left_cmd->arguments);
+        perror("Left pipeline execution failed");
+        _exit(1);
+    }
+
+    pid_t child2 = fork();
+    if (child2 == -1) { perror("fork failed"); close(pipefd[0]); close(pipefd[1]); return; }
+    
+    if (child2 == 0) {
+        setpgid(0, child1); // group second child under first child's process group
+        dup2(pipefd[0], STDIN_FILENO);
+        close(pipefd[0]);
+        close(pipefd[1]);
+
+        if (right_cmd->outputRedirect) {
+            int out_fd = open(right_cmd->outputRedirect, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+            if (out_fd >= 0) { dup2(out_fd, STDOUT_FILENO); close(out_fd); }
+        }
+
+        execvp(right_cmd->arguments[0], right_cmd->arguments);
+        perror("Right pipeline execution failed");
+        _exit(1);
+    }
+
+    close(pipefd[0]);
+    close(pipefd[1]);
+
+    if (left_cmd->blocking) {
+        waitpid(child1, NULL, 0);
+    }
+    if (right_cmd->blocking) {
+        waitpid(child2, NULL, 0);
+    }
+}
+
 void excecute(cmdLine *pCmdLine){
+    if (!pCmdLine) return;
+
+    if (pCmdLine->next != NULL) {
+        execute_pipeline(pCmdLine, &global_process_list); 
+        return;
+    }
+
+
     pid_t pid = fork();
     if (pid == -1) {
         perror("fork failed");
         return;
     }
     if (pid == 0) { // child: apply redirections first, then replace with the command
-
+        setpgid(0, 0);
         if (pCmdLine->inputRedirect != NULL) {
         int inFd = open(pCmdLine->inputRedirect, O_RDONLY);
         if (inFd < 0) {
@@ -103,7 +182,7 @@ int handleSignal(cmdLine *pCmdLine) {
     sleep(1);
 
     if (ret == -1) {
-        fprintf(stderr, "Tried to send %s to %d and failed: %s\n", cmd, targetPID, strerror(errno));
+        fprintf(stderr, "Tried to send %s to %d and failed: %s\n", cmd, atoi(targetPIDstr), strerror(errno));
     } else if (debug_mode == 1) {
         fprintf(stdout, "Sent %s to %d \n", cmd, targetPID);
     }
@@ -150,6 +229,21 @@ int main(int argc, char **argv){
             }
             freeCmdLines(parsedLine);
             continue;
+        }
+
+        if (strcmp(parsedLine->arguments[0], "procs") == 0) {
+            if (global_process_list != NULL) {
+                printProcessList(&global_process_list);
+            } else {
+                printf("No background processes currently tracking.\n");
+            }
+            freeCmdLines(parsedLine);
+            continue;
+        }
+
+        if (global_process_list != NULL) {
+             updateProcessList(&global_process_list);
+             printProcessList(&global_process_list);
         }
     
 
