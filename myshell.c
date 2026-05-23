@@ -11,9 +11,125 @@
 #include <fcntl.h>
 #include <signal.h>
 
-typedef struct process {
-    void* dummy; 
+#define TERMINATED  -1
+#define RUNNING 1
+#define SUSPENDED 0
+
+typedef struct process{
+    cmdLine* cmd;
+    pid_t pid;
+    int status;
+    struct process *next;
 } process;
+
+void updateProcessList(process **process_list);
+
+
+
+/*-----------------------------------------task 3a-------------------------------------------------*/
+
+void addProcess(process** process_list, cmdLine* cmd, pid_t pid) {
+    struct process* newProcess = malloc(sizeof(process));
+    newProcess -> cmd = cmd;
+    newProcess -> pid = pid;
+    newProcess -> status = 1;
+    newProcess -> next = *process_list;
+    *process_list = newProcess;
+    
+}	
+
+const char* getStatusText(int status) {
+    if (status == RUNNING) {
+        return "Running";
+    }
+    if (status == SUSPENDED) {
+        return "Suspended";
+    }
+    return "Terminated";
+}
+
+void printProcessList(process** process_list) {
+    updateProcessList(process_list);
+    process* curr = *process_list;
+    while (curr) {
+        int i = 0;
+        printf("%d\t%s\t", curr -> pid, getStatusText(curr -> status));
+
+        while (i < curr-> cmd -> argCount - 1) {
+            printf("%s ", curr-> cmd -> arguments[i]);
+            i++;
+        }
+        if (i == curr-> cmd -> argCount - 1) {
+            printf("%s\n", curr-> cmd -> arguments[i]);
+        }     
+        curr = curr -> next;
+    }
+
+    //delete dead processes
+    curr = *process_list;
+    process* first = NULL;
+    process* prev = NULL;
+    while (curr) {
+        process* next = curr -> next;
+        if(curr -> status == TERMINATED) {
+            if (prev) {
+                prev -> next = curr -> next;
+            }
+            freeCmdLines(curr -> cmd);
+            free(curr);
+        } else {
+            prev = curr;
+            if (!first) { first = curr; }
+        }
+        curr = next;
+    }
+
+    *process_list = first;
+}
+
+/*-----------------------------------------task 3b-------------------------------------------------*/
+
+void freeProcessList(process* process_list) {
+    process* tmp = NULL;
+    while (process_list) {
+        tmp = process_list -> next;
+        freeCmdLines(process_list -> cmd);
+        free(process_list);
+        process_list = tmp;
+    }
+}
+int get_process_status(pid_t pid) {
+    int wstatus;
+    pid_t result = waitpid(pid, &wstatus, WNOHANG | WUNTRACED);
+    if (result == 0 || (result > 0 && WIFCONTINUED(wstatus))) { return RUNNING; }
+    if (result > 0 && WIFSTOPPED(wstatus)) { return SUSPENDED; } 
+    return TERMINATED; 
+}
+
+void updateProcessList(process **process_list) {
+    if (process_list) {
+        process* curr = *process_list;
+        int newStatus;
+        while(curr) {
+            newStatus = get_process_status(curr->pid);
+            curr->status = newStatus;
+            curr = curr->next;
+        }
+    }
+
+}
+
+void updateProcessStatus(process* process_list, int pid, int status) {
+    process* curr = process_list;
+    while(curr) {
+        if (pid == curr->pid) {
+            curr->status = status;
+        }
+        curr = curr->next;
+    }
+}
+/*-------------------------------------------------------------------------------------------------*/
+
 
 process* global_process_list = NULL;
 int debug_mode = 0;
@@ -85,14 +201,20 @@ void execute_pipeline(cmdLine *left_cmd, process **proc_list) {
     }
 }
 
-void excecute(cmdLine *pCmdLine){
-    if (!pCmdLine) return;
+int last_command_tracked = 0;
 
-    if (pCmdLine->next != NULL) {
-        execute_pipeline(pCmdLine, &global_process_list); 
+void excecute(cmdLine *pCmdLine){
+    if (!pCmdLine) {
+        last_command_tracked = 0;
         return;
     }
 
+    last_command_tracked = 0;
+
+    if (pCmdLine->next != NULL) {
+        execute_pipeline(pCmdLine, &global_process_list);
+        return;
+    }
 
     pid_t pid = fork();
     if (pid == -1) {
@@ -102,32 +224,32 @@ void excecute(cmdLine *pCmdLine){
     if (pid == 0) { // child: apply redirections first, then replace with the command
         setpgid(0, 0);
         if (pCmdLine->inputRedirect != NULL) {
-        int inFd = open(pCmdLine->inputRedirect, O_RDONLY);
-        if (inFd < 0) {
-            perror("failed to redirect input file");
-            _exit(1);
-        }
-        if (dup2(inFd, STDIN_FILENO) < 0) {
-            perror("failed to redirect stdin");
+            int inFd = open(pCmdLine->inputRedirect, O_RDONLY);
+            if (inFd < 0) {
+                perror("failed to redirect input file");
+                _exit(1);
+            }
+            if (dup2(inFd, STDIN_FILENO) < 0) {
+                perror("failed to redirect stdin");
+                close(inFd);
+                _exit(1);
+            }
             close(inFd);
-            _exit(1);
         }
-        close(inFd);
-        }
-        
-       if (pCmdLine->outputRedirect != NULL) {
+
+        if (pCmdLine->outputRedirect != NULL) {
             int outFd = open(pCmdLine->outputRedirect, O_WRONLY | O_CREAT | O_TRUNC, 0644);
             if (outFd < 0) {
                 perror("failed to redirect output file");
                 _exit(1);
             }
             if (dup2(outFd, STDOUT_FILENO) < 0) {
-               perror("failed to redirect stdout");
-               close(outFd);
-               _exit(1);
+                perror("failed to redirect stdout");
+                close(outFd);
+                _exit(1);
             }
             close(outFd);
-        }        
+        }
 
         if(execvp(pCmdLine->arguments[0], pCmdLine->arguments) == -1){
             perror("excecution failed");
@@ -141,8 +263,11 @@ void excecute(cmdLine *pCmdLine){
         }
         sleep(1);
         if (pCmdLine->blocking) {
-            waitpid(pid, NULL, 0); 
+            waitpid(pid, NULL, 0);
+            return;
         }
+        addProcess(&global_process_list, pCmdLine, pid);
+        last_command_tracked = 1;
     }
 }
 
@@ -151,47 +276,66 @@ void excecute(cmdLine *pCmdLine){
     0  -  signal was sent.
    -1  -  tried to send a signal and failed. */
 int handleSignal(cmdLine *pCmdLine) {
-    if (pCmdLine -> argCount != 2) {
-        return 1;
+    if (pCmdLine -> argCount == 2) {
+        char* cmd = pCmdLine->arguments[0];
+        char* targetPIDstr = pCmdLine->arguments[1];
+        int ret = 0;
+        int signalNum = 0;
+        int requestedPID = atoi(targetPIDstr);
+        int targetPID = atoi(targetPIDstr);
+        int updatedStatus = RUNNING;
+
+        if (strcmp(cmd, "stop") == 0) {
+            signalNum = SIGSTOP;
+            updatedStatus = SUSPENDED;
+        } else if (strcmp(cmd, "wakeup") == 0) {
+            signalNum = SIGCONT;
+            updatedStatus = RUNNING;
+        } else if (strcmp(cmd, "ice") == 0) {
+            signalNum = SIGINT;
+            updatedStatus = TERMINATED;
+        } else if (strcmp(cmd, "nuke") == 0) {
+            signalNum = SIGKILL;
+            updatedStatus = TERMINATED;
+            targetPID = -targetPID;
+        } else {
+            return 1;
+        }
+
+        if (targetPID == 0) {
+            fprintf(stderr, "Invalid PID: %s\n", targetPIDstr);
+            return -1;
+        }
+        ret = kill(targetPID, signalNum);
+        sleep(1);
+        if (ret == -1) {
+            fprintf(stderr, "Tried to send %s to %d and failed: %s\n", cmd, requestedPID, strerror(errno));
+        } else if (debug_mode == 1) {
+            fprintf(stdout, "Sent %s to %d \n", cmd, targetPID);
+        }
+
+        if (ret == 0) {
+            if (strcmp(cmd, "nuke") == 0) {
+                process* curr = global_process_list;
+                while (curr) {
+                    pid_t pgid = getpgid(curr->pid);
+                    if (pgid == requestedPID) {
+                        curr->status = TERMINATED;
+                    }
+                    curr = curr->next;
+                }
+            } else {
+                updateProcessStatus(global_process_list, requestedPID, updatedStatus);
+            }
+        }
+
+        return ret;
     }
-    char* cmd = pCmdLine->arguments[0];
-    char* targetPIDstr = pCmdLine->arguments[1];
-    int ret = 0;
-    int signalNum = 0;
-    int targetPID = atoi(targetPIDstr); 
 
-    if (strcmp(cmd, "stop") == 0) {
-        signalNum = SIGSTOP;
-    } else if (strcmp(cmd, "wakeup") == 0) {
-        signalNum = SIGCONT;
-    } else if (strcmp(cmd, "ice") == 0) {
-        signalNum = SIGINT;
-    } else if (strcmp(cmd, "nuke") == 0) {
-        signalNum = SIGKILL;
-        targetPID = -targetPID; 
-    } else {
-        return 1;
-    }
-
-    if (targetPID == 0) { 
-        fprintf(stderr, "Invalid PID: %s\n", targetPIDstr);
-        return -1;
-    }
-
-    ret = kill(targetPID, signalNum);
-    sleep(1);
-
-    if (ret == -1) {
-        fprintf(stderr, "Tried to send %s to %d and failed: %s\n", cmd, atoi(targetPIDstr), strerror(errno));
-    } else if (debug_mode == 1) {
-        fprintf(stdout, "Sent %s to %d \n", cmd, targetPID);
-    }
-
-    return ret;
+    return 1;
 }
 
 int main(int argc, char **argv){
-
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-d") == 0) {
             debug_mode = 1;
@@ -207,9 +351,8 @@ int main(int argc, char **argv){
             printf("%s$ ", cwd);
         }
 
-
         if (fgets(input, 2048, stdin) == NULL) {  //checking for EOF
-                break;
+            break;
         }
 
         cmdLine *parsedLine = parseCmdLines(input);
@@ -221,7 +364,6 @@ int main(int argc, char **argv){
             freeCmdLines(parsedLine);
             break;
         }
-
 
         if (strcmp(parsedLine->arguments[0], "cd") == 0) {
             if (chdir(parsedLine->arguments[1]) < 0) {
@@ -241,18 +383,16 @@ int main(int argc, char **argv){
             continue;
         }
 
-        if (global_process_list != NULL) {
-             updateProcessList(&global_process_list);
-             printProcessList(&global_process_list);
-        }
-    
-
-        if(handleSignal(parsedLine) == 1){
+        int signal_result = handleSignal(parsedLine);
+        if(signal_result == 1){
             excecute(parsedLine);
         }
-        freeCmdLines(parsedLine);
+        if (signal_result != 1 || !last_command_tracked) {
+            freeCmdLines(parsedLine);
+        }
     }
+
+    freeProcessList(global_process_list);
 
     return 0;
 }
-
