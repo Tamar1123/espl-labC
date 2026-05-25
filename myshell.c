@@ -52,18 +52,28 @@ void printProcessList(process** process_list) {
     updateProcessList(process_list);
     process* curr = *process_list;
     while (curr) {
-        int i = 0;
         printf("%d\t%s\t", curr -> pid, getStatusText(curr -> status));
 
-        while (i < curr-> cmd -> argCount - 1) {
-            printf("%s ", curr-> cmd -> arguments[i]);
-            i++;
+        cmdLine* current_cmd = curr->cmd;
+        while (current_cmd != NULL) {
+
+            for (int i = 0; i < current_cmd->argCount; i++) {
+                printf("%s", current_cmd->arguments[i]);
+                if (i < current_cmd->argCount - 1) {
+                    printf(" ");
+                }
+               
+            }
+
+            current_cmd = current_cmd->next;
+            if (current_cmd != NULL) {
+                printf(" | ");
+            }
         }
-        if (i == curr-> cmd -> argCount - 1) {
-            printf("%s\n", curr-> cmd -> arguments[i]);
-        }     
+        printf("\n"); 
         curr = curr -> next;
-    }
+
+        }
 
     //delete dead processes
     curr = *process_list;
@@ -98,25 +108,29 @@ void freeProcessList(process* process_list) {
         process_list = tmp;
     }
 }
-int get_process_status(pid_t pid) {
+int get_process_status(pid_t pid, int current_status) {
     int wstatus;
-    pid_t result = waitpid(pid, &wstatus, WNOHANG | WUNTRACED);
-    if (result == 0 || (result > 0 && WIFCONTINUED(wstatus))) { return RUNNING; }
-    if (result > 0 && WIFSTOPPED(wstatus)) { return SUSPENDED; } 
+    pid_t result = waitpid(pid, &wstatus, WNOHANG | WUNTRACED | WCONTINUED);
+    if (result == 0)
+        return current_status;
+    if (result > 0){
+        if (WIFSTOPPED(wstatus))  return SUSPENDED;  
+        if (WIFCONTINUED(wstatus))  return RUNNING;
+        if (WIFSIGNALED(wstatus) || WIFEXITED(wstatus)) return TERMINATED;
+    }
     return TERMINATED; 
+    
 }
 
 void updateProcessList(process **process_list) {
-    if (process_list) {
+     if (process_list) {
         process* curr = *process_list;
-        int newStatus;
         while(curr) {
-            newStatus = get_process_status(curr->pid);
-            curr->status = newStatus;
+            curr->status = get_process_status(curr->pid, curr->status);
             curr = curr->next;
         }
-    }
-
+    } 
+    
 }
 
 void updateProcessStatus(process* process_list, int pid, int status) {
@@ -133,6 +147,7 @@ void updateProcessStatus(process* process_list, int pid, int status) {
 
 process* global_process_list = NULL;
 int debug_mode = 0;
+int last_command_tracked = 0;
 
 void execute_pipeline(cmdLine *left_cmd, process **proc_list) {
     cmdLine *right_cmd = left_cmd->next;
@@ -171,11 +186,16 @@ void execute_pipeline(cmdLine *left_cmd, process **proc_list) {
         _exit(1);
     }
 
+    setpgid(child1, child1);
+
     pid_t child2 = fork();
     if (child2 == -1) { perror("fork failed"); close(pipefd[0]); close(pipefd[1]); return; }
     
+    setpgid(child2, child1);
+
     if (child2 == 0) {
         setpgid(0, child1); // group second child under first child's process group
+
         dup2(pipefd[0], STDIN_FILENO);
         close(pipefd[0]);
         close(pipefd[1]);
@@ -193,15 +213,17 @@ void execute_pipeline(cmdLine *left_cmd, process **proc_list) {
     close(pipefd[0]);
     close(pipefd[1]);
 
-    if (left_cmd->blocking) {
-        waitpid(child1, NULL, 0);
-    }
     if (right_cmd->blocking) {
+        waitpid(child1, NULL, 0);
         waitpid(child2, NULL, 0);
+    }
+    else{
+        addProcess(proc_list, left_cmd, child1); //process group led by child1
+        last_command_tracked = 1;
     }
 }
 
-int last_command_tracked = 0;
+
 
 void excecute(cmdLine *pCmdLine){
     if (!pCmdLine) {
@@ -347,6 +369,17 @@ int main(int argc, char **argv){
 
     while(1){
 
+        //clears out processes that had been terminated 
+        int zombie_process;
+        while (waitpid(-1, &zombie_process, WNOHANG) > 0) {
+        }
+
+        //auto refresh and print the status of background processes 
+        // before presenting the command prompt to the user again
+        if (global_process_list != NULL) {
+            updateProcessList(&global_process_list);
+        }
+
         if(getcwd(cwd, PATH_MAX) != NULL){
             printf("%s$ ", cwd);
         }
@@ -359,6 +392,7 @@ int main(int argc, char **argv){
         if (parsedLine == NULL) {
             continue;
         }
+        last_command_tracked = 0;
 
         if (strcmp(parsedLine->arguments[0], "quit") == 0) {
             freeCmdLines(parsedLine);
