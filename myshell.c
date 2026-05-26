@@ -11,9 +11,15 @@
 #include <fcntl.h>
 #include <signal.h>
 
+#define HISTLEN 10
 #define TERMINATED  -1
 #define RUNNING 1
 #define SUSPENDED 0
+
+typedef struct history_entry {
+    int command_number;
+    char *line;
+} history_entry;
 
 typedef struct process{
     cmdLine* cmd;
@@ -22,7 +28,182 @@ typedef struct process{
     struct process *next;
 } process;
 
+typedef struct history_queue {
+    history_entry *entries[HISTLEN];
+    int head;
+    int count;
+    int next_command_number;
+} history_queue;
+
 void updateProcessList(process **process_list);
+
+history_queue command_history = {{0}, 0, 0, 1};
+
+char *clone_line(const char *line) {
+    char *copy = malloc(strlen(line) + 1);
+    if (!copy) {
+        return NULL;
+    }
+    strcpy(copy, line);
+    return copy;
+}
+
+void strip_trailing_newline(char *line) {
+    size_t len = strlen(line);
+    if (len > 0 && line[len - 1] == '\n') {
+        line[len - 1] = '\0';
+    }
+}
+
+void history_free_entry(history_entry *entry) {
+    if (!entry) {
+        return;
+    }
+    free(entry->line);
+    free(entry);
+}
+
+void history_init(history_queue *history) {
+    int i;
+
+    history->head = 0;
+    history->count = 0;
+    history->next_command_number = 1;
+    for (i = 0; i < HISTLEN; ++i) {
+        history->entries[i] = NULL;
+    }
+}
+
+void history_append(history_queue *history, const char *line) {
+    history_entry *entry = malloc(sizeof(history_entry));
+    int insert_index;
+
+    if (!entry) {
+        return;
+    }
+
+    entry->line = clone_line(line);
+    if (!entry->line) {
+        free(entry);
+        return;
+    }
+
+    entry->command_number = history->next_command_number++;
+
+    if (history->count == HISTLEN) {
+        insert_index = history->head;
+        history_free_entry(history->entries[insert_index]);
+        history->entries[insert_index] = entry;
+        history->head = (history->head + 1) % HISTLEN;
+    } else {
+        insert_index = (history->head + history->count) % HISTLEN;
+        history->entries[insert_index] = entry;
+        history->count++;
+    }
+}
+
+history_entry *history_last(history_queue *history) {
+    if (history->count == 0) {
+        return NULL;
+    }
+    return history->entries[(history->head + history->count - 1) % HISTLEN];
+}
+
+history_entry *history_find(history_queue *history, int command_number) {
+    int i;
+
+    for (i = 0; i < history->count; ++i) {
+        history_entry *entry = history->entries[(history->head + i) % HISTLEN];
+        if (entry && entry->command_number == command_number) {
+            return entry;
+        }
+    }
+    return NULL;
+}
+
+void history_print(history_queue *history) {
+    int i;
+
+    for (i = 0; i < history->count; ++i) {
+        history_entry *entry = history->entries[(history->head + i) % HISTLEN];
+        if (entry) {
+            printf("%d %s\n", entry->command_number, entry->line);
+        }
+    }
+}
+
+void history_free(history_queue *history) {
+    int i;
+
+    for (i = 0; i < HISTLEN; ++i) {
+        history_free_entry(history->entries[i]);
+        history->entries[i] = NULL;
+    }
+    history->head = 0;
+    history->count = 0;
+}
+
+char *resolve_history_command(history_queue *history, const char *line, int *should_store, int *should_execute) {
+    history_entry *entry = NULL;
+    char *resolved_line = NULL;
+    char *endptr = NULL;
+    long command_number;
+
+    *should_store = 1;
+    *should_execute = 1;
+
+    if (strcmp(line, "history") == 0) {
+        history_print(history);
+        *should_store = 0;
+        *should_execute = 0;
+        return NULL;
+    }
+
+    if (strcmp(line, "!!") == 0) {
+        entry = history_last(history);
+        if (!entry) {
+            printf("history: no previous command\n");
+            *should_store = 0;
+            *should_execute = 0;
+            return NULL;
+        }
+        resolved_line = clone_line(entry->line);
+    } else if (line[0] == '!') {
+        if (line[1] == '\0') {
+            printf("history: invalid command number\n");
+            *should_store = 0;
+            *should_execute = 0;
+            return NULL;
+        }
+
+        command_number = strtol(line + 1, &endptr, 10);
+        if (endptr == line + 1 || *endptr != '\0' || command_number <= 0) {
+            printf("history: invalid command number\n");
+            *should_store = 0;
+            *should_execute = 0;
+            return NULL;
+        }
+
+        entry = history_find(history, (int)command_number);
+        if (!entry) {
+            printf("history: command number out of range\n");
+            *should_store = 0;
+            *should_execute = 0;
+            return NULL;
+        }
+        resolved_line = clone_line(entry->line);
+    } else {
+        resolved_line = clone_line(line);
+    }
+
+    if (!resolved_line) {
+        *should_store = 0;
+        *should_execute = 0;
+        return NULL;
+    }
+
+    return resolved_line;
+}
 
 
 
@@ -364,6 +545,8 @@ int main(int argc, char **argv){
         }
     }
 
+    history_init(&command_history);
+
     char input[2048];
     char cwd[PATH_MAX];
 
@@ -388,10 +571,28 @@ int main(int argc, char **argv){
             break;
         }
 
-        cmdLine *parsedLine = parseCmdLines(input);
-        if (parsedLine == NULL) {
+        strip_trailing_newline(input);
+
+        int should_store = 0;
+        int should_execute = 0;
+        char *resolved_line = resolve_history_command(&command_history, input, &should_store, &should_execute);
+
+        if (!should_execute) {
+            free(resolved_line);
             continue;
         }
+
+        cmdLine *parsedLine = parseCmdLines(resolved_line);
+        if (parsedLine == NULL) {
+            free(resolved_line);
+            continue;
+        }
+
+        if (should_store) {
+            history_append(&command_history, resolved_line);
+        }
+        free(resolved_line);
+
         last_command_tracked = 0;
 
         if (strcmp(parsedLine->arguments[0], "quit") == 0) {
@@ -427,6 +628,7 @@ int main(int argc, char **argv){
     }
 
     freeProcessList(global_process_list);
+    history_free(&command_history);
 
     return 0;
 }
