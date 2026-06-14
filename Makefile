@@ -9,11 +9,11 @@ mypipeline.o: mypipeline.c
 myshell: myshell.o LineParser.o
 	gcc -Wall -g -O0 -o myshell myshell.o LineParser.o
 
-myshell.o: myshell.c lab_2_copy/LineParser.h
-	gcc -Wall -g -O0 -c myshell.c -I./lab_2_copy
+myshell.o: myshell.c LineParser.h
+	gcc -Wall -g -O0 -c myshell.c
 
-LineParser.o: lab_2_copy/LineParser.c lab_2_copy/LineParser.h
-	gcc -Wall -g -O0 -c lab_2_copy/LineParser.c
+LineParser.o: LineParser.c LineParser.h
+	gcc -Wall -g -O0 -c LineParser.c
 
 .PHONY: all clean
 
